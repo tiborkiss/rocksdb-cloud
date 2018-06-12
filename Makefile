@@ -545,6 +545,9 @@ TOOLS = \
 	rocksdb_undump \
 	blob_dump \
 
+CLOUD_TOOLS = \
+    cloud_manifest_writer \
+
 TEST_LIBS = \
 	librocksdb_env_basic_test.a
 
@@ -642,7 +645,7 @@ endif  # PLATFORM_SHARED_EXT
 	analyze tools tools_lib
 
 
-all: $(LIBRARY) $(BENCHMARKS) tools tools_lib test_libs $(TESTS)
+all: $(LIBRARY) $(BENCHMARKS) tools tools_lib cloud_tools test_libs $(TESTS)
 
 all_but_some_tests: $(LIBRARY) $(BENCHMARKS) tools tools_lib test_libs $(SUBSET)
 
@@ -654,14 +657,16 @@ tools: $(TOOLS)
 
 tools_lib: $(TOOLS_LIBRARY)
 
+cloud_tools: $(CLOUD_TOOLS)
+
 test_libs: $(TEST_LIBS)
 
-dbg: $(LIBRARY) $(BENCHMARKS) tools $(TESTS)
+dbg: $(LIBRARY) $(BENCHMARKS) tools cloud_tools $(TESTS)
 
 # creates static library and programs
 release:
 	$(MAKE) clean
-	DEBUG_LEVEL=0 $(MAKE) static_lib tools db_bench
+	DEBUG_LEVEL=0 $(MAKE) static_lib tools cloud_tools db_bench
 
 coverage:
 	$(MAKE) clean
@@ -1473,6 +1478,9 @@ db_cloud_test: cloud/db_cloud_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 cloud_manifest_test: cloud/cloud_manifest_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+cloud_manifest_writer: cloud/tools/cloud_manifest_writer.o $(LIBOBJECTS)
 	$(AM_LINK)
 
 iostats_context_test: monitoring/iostats_context_test.o $(LIBOBJECTS) $(TESTHARNESS)
