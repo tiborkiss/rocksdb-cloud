@@ -41,6 +41,8 @@ DEFINE_string(cloud_dest_dbpath, "N/A", "Destination path to db relative to buck
 DEFINE_string(aws_region, "us-west-2", "AWS region");
 DEFINE_string(aws_access_key_id, "N/A", "AWS Access Key Id.");
 DEFINE_string(aws_secret_access_key, "N/A", "AWS Secret Access Key");
+DEFINE_bool(server_side_encryption, false, "If true, enables server side encryption.");
+DEFINE_string(encryption_key_id, "", "If non-empty, uses the key ID for encryption.");
 
 using namespace rocksdb;
 
@@ -55,13 +57,17 @@ class Migration {
       std::string & cloud_dest_dbpath,
       std::string & aws_region,
       std::string & aws_access_key_id,
-      std::string & aws_secret_access_key
+      std::string & aws_secret_access_key,
+      bool server_side_encryption,
+      std::string & encryption_key_id
     ) : local_dbpath_(local_dbpath) {
 
       // cloud environment config options here
       CloudEnvOptions cloud_env_options;
       cloud_env_options.credentials.access_key_id.assign(aws_access_key_id);
       cloud_env_options.credentials.secret_key.assign(aws_secret_access_key);
+      cloud_env_options.server_side_encryption = server_side_encryption;
+      cloud_env_options.encryption_key_id.assign(encryption_key_id);
 
       // Create a new AWS cloud env Status
       CloudEnv* cenv;
@@ -222,7 +228,9 @@ int main(int argc, char** argv) {
               FLAGS_cloud_dest_dbpath,
               FLAGS_aws_region,
               FLAGS_aws_access_key_id,
-              FLAGS_aws_secret_access_key);
+              FLAGS_aws_secret_access_key,
+              FLAGS_server_side_encryption,
+              FLAGS_encryption_key_id);
   Status s = m.createNewCloudManifest();
   if (!s.ok()) {
     std::cout << "createNewCloudManifest failed with " << s.ToString() << std::endl;
