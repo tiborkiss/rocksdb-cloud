@@ -48,6 +48,9 @@ class DBCloud : public StackableDB {
   // destination cloud storage.
   virtual Status Savepoint() = 0;
 
+  static Status PreloadCloudManifest(CloudEnv* cenv, const Options& options,
+                                     const std::string& dbname);
+
   virtual ~DBCloud() {}
 
  protected:

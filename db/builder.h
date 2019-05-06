@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "db/range_tombstone_fragmenter.h"
 #include "db/table_properties_collector.h"
 #include "options/cf_options.h"
 #include "rocksdb/comparator.h"
@@ -35,7 +36,6 @@ class VersionEdit;
 class TableBuilder;
 class WritableFileWriter;
 class InternalStats;
-class InternalIterator;
 
 // @param column_family_name Name of the column family that is also identified
 //    by column_family_id, or empty string if unknown. It must outlive the
@@ -43,7 +43,7 @@ class InternalIterator;
 // @param compression_dict Data for presetting the compression library's
 //    dictionary, or nullptr.
 TableBuilder* NewTableBuilder(
-    const ImmutableCFOptions& options,
+    const ImmutableCFOptions& options, const MutableCFOptions& moptions,
     const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
@@ -66,8 +66,9 @@ extern Status BuildTable(
     const std::string& dbname, Env* env, const ImmutableCFOptions& options,
     const MutableCFOptions& mutable_cf_options, const EnvOptions& env_options,
     TableCache* table_cache, InternalIterator* iter,
-    std::unique_ptr<InternalIterator> range_del_iter, FileMetaData* meta,
-    const InternalKeyComparator& internal_comparator,
+    std::vector<std::unique_ptr<FragmentedRangeTombstoneIterator>>
+        range_del_iters,
+    FileMetaData* meta, const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
     uint32_t column_family_id, const std::string& column_family_name,

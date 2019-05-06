@@ -5,7 +5,7 @@
 #pragma once
 
 #define ROCKSDB_MAJOR 5
-#define ROCKSDB_MINOR 11
+#define ROCKSDB_MINOR 18
 #define ROCKSDB_PATCH 3
 
 // Do not use these. We made the mistake of declaring macros starting with

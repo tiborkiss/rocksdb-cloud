@@ -67,16 +67,19 @@ DBTestBase::DBTestBase(const std::string path)
       option_config_(kDefault),
       s3_env_(nullptr) {
 
+  std::string mypath = path;
 #ifdef USE_AWS
+  // Randomize the test path so that multiple tests can run in parallel
+  mypath = mypath + "_" + std::to_string(rand());
   option_env_ = kDefaultEnv;
   env_->NewLogger(test::TmpDir(env_) + "/rocksdb-cloud.log", &info_log_);
   info_log_->SetInfoLogLevel(InfoLogLevel::DEBUG_LEVEL);
-  s3_env_ = CreateNewAwsEnv();
+  s3_env_ = CreateNewAwsEnv(mypath);
 #endif
 
   env_->SetBackgroundThreads(1, Env::LOW);
   env_->SetBackgroundThreads(1, Env::HIGH);
-  dbname_ = test::TmpDir(env_) + path;
+  dbname_ = test::PerThreadDBPath(env_, path);
   alternative_wal_dir_ = dbname_ + "/wal";
   alternative_db_log_dir_ = dbname_ + "/db_log_dir";
   auto options = CurrentOptions();
@@ -132,7 +135,8 @@ bool DBTestBase::ShouldSkipOptions(int option_config, int skip_mask) {
 
     if ((skip_mask & kSkipUniversalCompaction) &&
         (option_config == kUniversalCompaction ||
-         option_config == kUniversalCompactionMultiLevel)) {
+         option_config == kUniversalCompactionMultiLevel ||
+         option_config == kUniversalSubcompactions)) {
       return true;
     }
     if ((skip_mask & kSkipMergePut) && option_config == kMergePut) {
@@ -166,6 +170,11 @@ bool DBTestBase::ShouldSkipOptions(int option_config, int skip_mask) {
     return false;
 }
 
+bool DBTestBase::ShouldSkipAwsOptions(int option_config) {
+    // AWS Env doesn't work with DirectIO
+    return option_config == kDirectIO;
+}
+
 // Switch to a fresh database with the next option configuration to
 // test.  Return false if there are no more configurations to test.
 bool DBTestBase::ChangeOptions(int skip_mask) {
@@ -173,6 +182,9 @@ bool DBTestBase::ChangeOptions(int skip_mask) {
    for (option_config_++; option_config_ < kEnd; option_config_++) {
      if (ShouldSkipOptions(option_config_, skip_mask)) {
        continue;
+     }
+     if (option_env_ == kAwsEnv && ShouldSkipAwsOptions(option_config_)) {
+         continue;
      }
      break;
    }
@@ -279,6 +291,47 @@ bool DBTestBase::ChangeFilterOptions() {
   return true;
 }
 
+// Switch between different DB options for file ingestion tests.
+bool DBTestBase::ChangeOptionsForFileIngestionTest() {
+  if (option_config_ == kDefault) {
+    option_config_ = kUniversalCompaction;
+    Destroy(last_options_);
+    auto options = CurrentOptions();
+    options.create_if_missing = true;
+    TryReopen(options);
+    return true;
+  } else if (option_config_ == kUniversalCompaction) {
+    option_config_ = kUniversalCompactionMultiLevel;
+    Destroy(last_options_);
+    auto options = CurrentOptions();
+    options.create_if_missing = true;
+    TryReopen(options);
+    return true;
+  } else if (option_config_ == kUniversalCompactionMultiLevel) {
+    option_config_ = kLevelSubcompactions;
+    Destroy(last_options_);
+    auto options = CurrentOptions();
+    assert(options.max_subcompactions > 1);
+    TryReopen(options);
+    return true;
+  } else if (option_config_ == kLevelSubcompactions) {
+    option_config_ = kUniversalSubcompactions;
+    Destroy(last_options_);
+    auto options = CurrentOptions();
+    assert(options.max_subcompactions > 1);
+    TryReopen(options);
+    return true;
+  } else if (option_config_ == kUniversalSubcompactions) {
+    option_config_ = kDirectIO;
+    Destroy(last_options_);
+    auto options = CurrentOptions();
+    TryReopen(options);
+    return true;
+  } else {
+    return false;
+  }
+}
+
 // Return the current option configuration.
 Options DBTestBase::CurrentOptions(
     const anon::OptionsOverride& options_override) const {
@@ -367,6 +420,26 @@ Options DBTestBase::GetOptions(
           NewHashCuckooRepFactory(options.write_buffer_size));
       options.allow_concurrent_memtable_write = false;
       break;
+      case kDirectIO: {
+        options.use_direct_reads = true;
+        options.use_direct_io_for_flush_and_compaction = true;
+        options.compaction_readahead_size = 2 * 1024 * 1024;
+  #if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && \
+      !defined(OS_AIX) && !defined(OS_OPENBSD)
+        rocksdb::SyncPoint::GetInstance()->SetCallBack(
+            "NewWritableFile:O_DIRECT", [&](void* arg) {
+              int* val = static_cast<int*>(arg);
+              *val &= ~O_DIRECT;
+            });
+        rocksdb::SyncPoint::GetInstance()->SetCallBack(
+            "NewRandomAccessFile:O_DIRECT", [&](void* arg) {
+              int* val = static_cast<int*>(arg);
+              *val &= ~O_DIRECT;
+            });
+        rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+  #endif
+        break;
+      }
 #endif  // ROCKSDB_LITE
     case kMergePut:
       options.merge_operator = MergeOperators::CreatePutOperator();
@@ -430,6 +503,10 @@ Options DBTestBase::GetOptions(
       table_options.checksum = kxxHash;
       break;
     }
+    case kxxHash64Checksum: {
+      table_options.checksum = kxxHash64;
+      break;
+    }
     case kFIFOCompaction: {
       options.compaction_style = kCompactionStyleFIFO;
       break;
@@ -447,6 +524,18 @@ Options DBTestBase::GetOptions(
     case kBlockBasedTableWithPartitionedIndex: {
       table_options.index_type = BlockBasedTableOptions::kTwoLevelIndexSearch;
       options.prefix_extractor.reset(NewNoopTransform());
+      break;
+    }
+    case kBlockBasedTableWithPartitionedIndexFormat4: {
+      table_options.format_version = 4;
+      // Format 4 changes the binary index format. Since partitioned index is a
+      // super-set of simple indexes, we are also using kTwoLevelIndexSearch to
+      // test this format.
+      table_options.index_type = BlockBasedTableOptions::kTwoLevelIndexSearch;
+      // The top-level index in partition filters are also affected by format 4.
+      table_options.filter_policy.reset(NewBloomFilterPolicy(10, false));
+      table_options.partition_filters = true;
+      table_options.index_block_restart_interval = 8;
       break;
     }
     case kBlockBasedTableWithIndexRestartInterval: {
@@ -479,26 +568,6 @@ Options DBTestBase::GetOptions(
     case kConcurrentSkipList: {
       options.allow_concurrent_memtable_write = true;
       options.enable_write_thread_adaptive_yield = true;
-      break;
-    }
-    case kDirectIO: {
-      options.use_direct_reads = true;
-      options.use_direct_io_for_flush_and_compaction = true;
-      options.compaction_readahead_size = 2 * 1024 * 1024;
-#if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_SOLARIS) && \
-    !defined(OS_AIX) && !defined(OS_OPENBSD)
-      rocksdb::SyncPoint::GetInstance()->SetCallBack(
-          "NewWritableFile:O_DIRECT", [&](void* arg) {
-            int* val = static_cast<int*>(arg);
-            *val &= ~O_DIRECT;
-          });
-      rocksdb::SyncPoint::GetInstance()->SetCallBack(
-          "NewRandomAccessFile:O_DIRECT", [&](void* arg) {
-            int* val = static_cast<int*>(arg);
-            *val &= ~O_DIRECT;
-          });
-      rocksdb::SyncPoint::GetInstance()->EnableProcessing();
-#endif
       break;
     }
     case kPipelinedWrite: {
@@ -549,7 +618,7 @@ Options DBTestBase::GetOptions(
 }
 
 #ifdef USE_AWS
-Env* DBTestBase::CreateNewAwsEnv() {
+Env* DBTestBase::CreateNewAwsEnv(const std::string& prefix) {
   // get AWS credentials
   rocksdb::CloudEnvOptions coptions;
   std::string region;
@@ -563,14 +632,15 @@ Env* DBTestBase::CreateNewAwsEnv() {
   } else {
     st = AwsEnv::NewAwsEnv(Env::Default(),
                            "dbtest." + AwsEnv::GetTestBucketSuffix(),
-                           "",  // src object prefix
+                           prefix,  // src object prefix
                            region, // src region
                            "dbtest." + AwsEnv::GetTestBucketSuffix(),
-                           "",  // dest object prefix
+                           prefix,  // dest object prefix
                            region, // dest region
                            coptions, info_log_, &cenv);
     ((CloudEnvImpl*)cenv)->TEST_DisableCloudManifest();
-    ROCKS_LOG_DEBUG(info_log_, "Created new aws env with empty path");
+    ((AwsEnv*)cenv)->TEST_SetFileDeletionDelay(std::chrono::seconds(0));
+    ROCKS_LOG_INFO(info_log_, "Created new aws env with path %s", prefix.c_str());
     assert(st.ok() && cenv);
     // If we are keeping wal in cloud storage, then tail it as well.
     // so that our unit tests can run to completion.
@@ -649,14 +719,31 @@ void DBTestBase::DestroyAndReopen(const Options& options) {
   ASSERT_OK(TryReopen(options));
 }
 
-void DBTestBase::Destroy(const Options& options) {
+void DBTestBase::Destroy(const Options& options, bool delete_cf_paths) {
+  std::vector<ColumnFamilyDescriptor> column_families;
+  if (delete_cf_paths) {
+    for (size_t i = 0; i < handles_.size(); ++i) {
+      ColumnFamilyDescriptor cfdescriptor;
+      handles_[i]->GetDescriptor(&cfdescriptor);
+      column_families.push_back(cfdescriptor);
+    }
+  }
   Close();
-  ASSERT_OK(DestroyDB(dbname_, options));
+  ASSERT_OK(DestroyDB(dbname_, options, column_families));
 #ifdef USE_AWS
   if (s3_env_) {
     AwsEnv* aenv = static_cast<AwsEnv *>(s3_env_);
-    Status st = aenv->EmptyBucket("dbtest." + AwsEnv::GetTestBucketSuffix());
+    Status st = aenv->EmptyBucket("dbtest." + AwsEnv::GetTestBucketSuffix(), dbname_);
     ASSERT_TRUE(st.ok() || st.IsNotFound());
+    for (int r = 0; r < 10; ++r) {
+      // The existance is not propagated atomically in S3, so wait until
+      // IDENTITY file no longer exists.
+      if (aenv->FileExists(dbname_ + "/IDENTITY").ok()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 * (r + 1)));
+        continue;
+      }
+      break;
+    }
   }
 #endif
 }
@@ -668,30 +755,19 @@ Status DBTestBase::ReadOnlyReopen(const Options& options) {
 Status DBTestBase::TryReopen(const Options& options) {
   Close();
   last_options_.table_factory.reset();
-  // Note: operator= is an unsafe approach here since it destructs shared_ptr in
-  // the same order of their creation, in contrast to destructors which
-  // destructs them in the opposite order of creation. One particular problme is
-  // that the cache destructor might invoke callback functions that use Option
-  // members such as statistics. To work around this problem, we manually call
-  // destructor of table_facotry which eventually clears the block cache.
+  // Note: operator= is an unsafe approach here since it destructs
+  // std::shared_ptr in the same order of their creation, in contrast to
+  // destructors which destructs them in the opposite order of creation. One
+  // particular problme is that the cache destructor might invoke callback
+  // functions that use Option members such as statistics. To work around this
+  // problem, we manually call destructor of table_facotry which eventually
+  // clears the block cache.
   last_options_ = options;
   return DB::Open(options, dbname_, &db_);
 }
 
 bool DBTestBase::IsDirectIOSupported() {
-  EnvOptions env_options;
-  env_options.use_mmap_writes = false;
-  env_options.use_direct_writes = true;
-  std::string tmp = TempFileName(dbname_, 999);
-  Status s;
-  {
-    unique_ptr<WritableFile> file;
-    s = env_->NewWritableFile(tmp, &file, env_options);
-  }
-  if (s.ok()) {
-    s = env_->DeleteFile(tmp);
-  }
-  return s.ok();
+  return test::IsDirectIOSupported(env_, dbname_);
 }
 
 bool DBTestBase::IsMemoryMappedAccessSupported() const {
@@ -704,6 +780,13 @@ Status DBTestBase::Flush(int cf) {
   } else {
     return db_->Flush(FlushOptions(), handles_[cf]);
   }
+}
+
+Status DBTestBase::Flush(const std::vector<int>& cf_ids) {
+  std::vector<ColumnFamilyHandle*> cfhs;
+  std::for_each(cf_ids.begin(), cf_ids.end(),
+                [&cfhs, this](int id) { cfhs.emplace_back(handles_[id]); });
+  return db_->Flush(FlushOptions(), cfhs);
 }
 
 Status DBTestBase::Put(const Slice& k, const Slice& v, WriteOptions wo) {
@@ -833,13 +916,15 @@ std::string DBTestBase::AllEntriesFor(const Slice& user_key, int cf) {
   Arena arena;
   auto options = CurrentOptions();
   InternalKeyComparator icmp(options.comparator);
-  RangeDelAggregator range_del_agg(icmp, {} /* snapshots */);
+  ReadRangeDelAggregator range_del_agg(&icmp,
+                                       kMaxSequenceNumber /* upper_bound */);
   ScopedArenaIterator iter;
   if (cf == 0) {
-    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg));
+    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg,
+                                           kMaxSequenceNumber));
   } else {
-    iter.set(
-        dbfull()->NewInternalIterator(&arena, &range_del_agg, handles_[cf]));
+    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg,
+                                           kMaxSequenceNumber, handles_[cf]));
   }
   InternalKey target(user_key, kMaxSequenceNumber, kTypeValue);
   iter->Seek(target.Encode());
@@ -948,7 +1033,6 @@ size_t DBTestBase::CountLiveFiles() {
   db_->GetLiveFilesMetaData(&metadata);
   return metadata.size();
 }
-#endif  // ROCKSDB_LITE
 
 int DBTestBase::NumTableFilesAtLevel(int level, int cf) {
   std::string property;
@@ -1009,6 +1093,7 @@ std::string DBTestBase::FilesPerLevel(int cf) {
   result.resize(last_non_zero_offset);
   return result;
 }
+#endif  // !ROCKSDB_LITE
 
 size_t DBTestBase::CountFiles() {
   std::vector<std::string> files;
@@ -1078,6 +1163,7 @@ void DBTestBase::MoveFilesToLevel(int level, int cf) {
   }
 }
 
+#ifndef ROCKSDB_LITE
 void DBTestBase::DumpFileCounts(const char* label) {
   fprintf(stderr, "---\n%s:\n", label);
   fprintf(stderr, "maxoverlap: %" PRIu64 "\n",
@@ -1089,6 +1175,7 @@ void DBTestBase::DumpFileCounts(const char* label) {
     }
   }
 }
+#endif  // !ROCKSDB_LITE
 
 std::string DBTestBase::DumpSSTableList() {
   std::string property;
@@ -1096,9 +1183,9 @@ std::string DBTestBase::DumpSSTableList() {
   return property;
 }
 
-void DBTestBase::GetSstFiles(std::string path,
+void DBTestBase::GetSstFiles(Env* env, std::string path,
                              std::vector<std::string>* files) {
-  env_->GetChildren(path, files);
+  env->GetChildren(path, files);
 
   files->erase(
       std::remove_if(files->begin(), files->end(), [](std::string name) {
@@ -1110,7 +1197,7 @@ void DBTestBase::GetSstFiles(std::string path,
 
 int DBTestBase::GetSstFileCount(std::string path) {
   std::vector<std::string> files;
-  GetSstFiles(path, &files);
+  DBTestBase::GetSstFiles(env_, path, &files);
   return static_cast<int>(files.size());
 }
 
@@ -1222,17 +1309,18 @@ UpdateStatus DBTestBase::updateInPlaceSmallerVarintSize(char* prevValue,
   }
 }
 
-UpdateStatus DBTestBase::updateInPlaceLargerSize(char* prevValue,
-                                                 uint32_t* prevSize,
+UpdateStatus DBTestBase::updateInPlaceLargerSize(char* /*prevValue*/,
+                                                 uint32_t* /*prevSize*/,
                                                  Slice delta,
                                                  std::string* newValue) {
   *newValue = std::string(delta.size(), 'c');
   return UpdateStatus::UPDATED;
 }
 
-UpdateStatus DBTestBase::updateInPlaceNoAction(char* prevValue,
-                                               uint32_t* prevSize, Slice delta,
-                                               std::string* newValue) {
+UpdateStatus DBTestBase::updateInPlaceNoAction(char* /*prevValue*/,
+                                               uint32_t* /*prevSize*/,
+                                               Slice /*delta*/,
+                                               std::string* /*newValue*/) {
   return UpdateStatus::UPDATE_FAILED;
 }
 
@@ -1241,15 +1329,17 @@ void DBTestBase::validateNumberOfEntries(int numValues, int cf) {
   Arena arena;
   auto options = CurrentOptions();
   InternalKeyComparator icmp(options.comparator);
-  RangeDelAggregator range_del_agg(icmp, {} /* snapshots */);
+  ReadRangeDelAggregator range_del_agg(&icmp,
+                                       kMaxSequenceNumber /* upper_bound */);
   // This should be defined after range_del_agg so that it destructs the
   // assigned iterator before it range_del_agg is already destructed.
   ScopedArenaIterator iter;
   if (cf != 0) {
-    iter.set(
-        dbfull()->NewInternalIterator(&arena, &range_del_agg, handles_[cf]));
+    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg,
+                                           kMaxSequenceNumber, handles_[cf]));
   } else {
-    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg));
+    iter.set(dbfull()->NewInternalIterator(&arena, &range_del_agg,
+                                           kMaxSequenceNumber));
   }
   iter->SeekToFirst();
   ASSERT_EQ(iter->status().ok(), true);
@@ -1269,9 +1359,9 @@ void DBTestBase::validateNumberOfEntries(int numValues, int cf) {
 void DBTestBase::CopyFile(const std::string& source,
                           const std::string& destination, uint64_t size) {
   const EnvOptions soptions;
-  unique_ptr<SequentialFile> srcfile;
+  std::unique_ptr<SequentialFile> srcfile;
   ASSERT_OK(env_->NewSequentialFile(source, &srcfile, soptions));
-  unique_ptr<WritableFile> destfile;
+  std::unique_ptr<WritableFile> destfile;
   ASSERT_OK(env_->NewWritableFile(destination, &destfile, soptions));
 
   if (size == 0) {
@@ -1449,8 +1539,10 @@ void DBTestBase::VerifyDBInternal(
     std::vector<std::pair<std::string, std::string>> true_data) {
   Arena arena;
   InternalKeyComparator icmp(last_options_.comparator);
-  RangeDelAggregator range_del_agg(icmp, {});
-  auto iter = dbfull()->NewInternalIterator(&arena, &range_del_agg);
+  ReadRangeDelAggregator range_del_agg(&icmp,
+                                       kMaxSequenceNumber /* upper_bound */);
+  auto iter =
+      dbfull()->NewInternalIterator(&arena, &range_del_agg, kMaxSequenceNumber);
   iter->SeekToFirst();
   for (auto p : true_data) {
     ASSERT_TRUE(iter->Valid());

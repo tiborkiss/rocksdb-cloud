@@ -12,7 +12,14 @@ the default location of /usr/local. You can follow the steps listed
 here https://github.com/aws/aws-sdk-cpp to install the c++ AWS sdk.
 
 If you want to compile rocksdb with AWS support, please set the following
-environment variable USE_AWS=1 and then
+environment variable USE_AWS=1. 
+
+If you want to compile rocksdb so that the write ahead log is stored
+in Kafka, then set environment variable USE_KAFKA=1. You have to use
+the C++ kafka client by downloading and installing the code from
+https://github.com/edenhill/librdkafka.
+
+Then run
 
    make clean all db_bench
 
@@ -25,8 +32,6 @@ AWS_ACCESS_KEY_ID     : your aws access credentials
 
 AWS_SECRET_ACCESS_KEY : your secret key
 
-AWS_BUCKET_NAME       : the name of your S3 test bucket
-
 AWS_DEFAULT_REGION : the AWS region of your client (e.g. us-west-2)
 
 ### Run Unit Tests
@@ -36,6 +41,7 @@ make check J=1
 ### Measure Performance
 To run dbbench,
    db_bench --env_uri="s3://" --aws_access_id=xxx and --aws_secret_key=yyy
+This will create files in a bucket named rockset.dbbench.$USER where $USER is the name of the user who is running the benchmark.
 
 
 

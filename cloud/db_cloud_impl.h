@@ -39,17 +39,28 @@ class DBCloudImpl : public DBCloud {
                                       const std::string& clone_dir,
                                       bool* do_reinit);
 
+  static Status GetCloudDbid(CloudEnvImpl* cenv, const Options& options,
+                             const std::string& local_dir,
+                             std::string* src_dbid, std::string* dest_dbid);
+
+  static Status ResyncDir(CloudEnvImpl* cenv, const Options& options,
+                          const std::string& local_dir);
+
   static Status SanitizeDirectory(const Options& options,
-                                  const std::string& clone_name, bool readonly);
+                                  const std::string& clone_name,
+                                  bool read_only);
 
   static Status CreateNewIdentityFile(CloudEnv* cenv, const Options& options,
                                       const std::string& dbid,
                                       const std::string& local_name);
 
-  static Status FetchCloudManifest(const Options& options,
-                                   const std::string& local_dbname);
+  static Status FetchCloudManifest(CloudEnv* cenv,
+                                   const Options& options,
+                                   const std::string& local_dbname,
+                                   bool force);
 
   static Status MaybeMigrateManifestFile(Env* env,
+                                         const Options& options,
                                          const std::string& local_dbname);
 
   static Status RollNewEpoch(CloudEnvImpl* cenv,

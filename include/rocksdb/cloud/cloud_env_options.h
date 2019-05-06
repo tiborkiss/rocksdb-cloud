@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
 
 namespace rocksdb {
 
@@ -21,9 +22,11 @@ enum CloudType : unsigned char {
 };
 
 enum LogType : unsigned char {
-  kLogNone = 0x0,       // Not really a log env
-  kLogKinesis = 0x1,    // Kinesis
-  kLogKafka = 0x2,      // Kafka
+  kLogNone = 0x0,  // Not really a log env
+  // Important: Kinesis integration currently has a known issue and is not
+  // supported, see https://github.com/rockset/rocksdb-cloud/issues/35
+  kLogKinesis = 0x1,  // Kinesis
+  kLogKafka = 0x2,    // Kafka
   kLogEnd = 0x3,
 };
 
@@ -32,6 +35,17 @@ class AwsCloudAccessCredentials {
  public:
   std::string access_key_id;
   std::string secret_key;
+};
+
+// Defines parameters required to connect to Kafka
+class KafkaLogOptions {
+ public:
+  // The config parameters for the kafka client. At a bare minimum,
+  // there needs to be at least one entry in this map that lists the
+  // kafka brokers. That entry is of the type
+  //  ("metadata.broker.list", "kafka1.rockset.com,kafka2.rockset.com"
+  //
+  std::unordered_map<std::string, std::string> client_config_params;
 };
 
 enum class CloudRequestOpType {
@@ -62,6 +76,9 @@ class CloudEnvOptions {
   // Access credentials
   AwsCloudAccessCredentials credentials;
 
+  // Only used if keep_local_log_files is true and log_type is kKafka.
+  KafkaLogOptions kafka_log_options;
+
   //
   // If true,  then sst files are stored locally and uploaded to the cloud in
   // the background. On restart, all files from the cloud that are not present
@@ -75,7 +92,7 @@ class CloudEnvOptions {
   // If true,  then .log and MANIFEST files are stored in a local file system.
   //           they are not uploaded to any cloud logging system.
   // If false, then .log and MANIFEST files are not stored locally, and are
-  //           stored in a cloud-logging system like Kinesis.
+  //           stored in a cloud-logging system like Kinesis or Kafka.
   // Default:  true
   bool keep_local_log_files;
 
@@ -122,6 +139,22 @@ class CloudEnvOptions {
   // Default: true
   bool run_purger;
 
+  // An ephemeral clone is a clone that has no destination bucket path. All
+  // updates to this clone are stored locally and not uploaded to cloud.
+  // It is called ephemeral because locally made updates can get lost if
+  // the machines dies.
+  // This flag controls whether the ephemeral db needs to be resynced to
+  // the source cloud bucket at every db open time.
+  // If true,  then the local ephemeral db is re-synced to the src cloud
+  //           bucket every time the db is opened. Any previous writes
+  //           to this ephemeral db are lost.
+  // If false, then the local ephemeral db is initialized from data in the
+  //           src cloud bucket only if the local copy does not exist.
+  //           If the local copy of the db already exists, then no data
+  //           from the src cloud bucket is copied to the local db dir.
+  // Default:  false
+  bool ephemeral_resync_on_open;
+
   // If true, we will skip the dbid verification on startup. This is currently
   // only used in tests and is not recommended setting.
   // Default: false
@@ -129,14 +162,15 @@ class CloudEnvOptions {
 
   CloudEnvOptions(
       CloudType _cloud_type = CloudType::kCloudAws,
-      LogType _log_type = LogType::kLogKinesis,
+      LogType _log_type = LogType::kLogKafka,
       bool _keep_local_sst_files = false, bool _keep_local_log_files = true,
       uint64_t _purger_periodicity_millis = 10 * 60 * 1000,
       bool _validate_filesize = true,
       std::shared_ptr<CloudRequestCallback> _cloud_request_callback = nullptr,
       bool _server_side_encryption = false, std::string _encryption_key_id = "",
       bool _create_bucket_if_missing = true, uint64_t _request_timeout_ms = 0,
-      bool _run_purger = false, bool _skip_dbid_verification = false)
+      bool _run_purger = false, bool _ephemeral_resync_on_open = false,
+      bool _skip_dbid_verification = false)
       : cloud_type(_cloud_type),
         log_type(_log_type),
         keep_local_sst_files(_keep_local_sst_files),
@@ -149,6 +183,7 @@ class CloudEnvOptions {
         create_bucket_if_missing(_create_bucket_if_missing),
         request_timeout_ms(_request_timeout_ms),
         run_purger(_run_purger),
+        ephemeral_resync_on_open(_ephemeral_resync_on_open),
         skip_dbid_verification(_skip_dbid_verification) {}
 
   // print out all options to the log
@@ -168,7 +203,8 @@ class CloudEnv : public Env {
   virtual ~CloudEnv();
 
   // Empties all contents of the associated cloud storage bucket.
-  virtual Status EmptyBucket(const std::string& bucket_prefix) = 0;
+  virtual Status EmptyBucket(const std::string& bucket_prefix,
+                             const std::string& path_prefix) = 0;
 
   // Reads a file from the cloud
   virtual Status NewSequentialFileCloud(const std::string& bucket_prefix,
@@ -273,4 +309,4 @@ class BucketObjectMetadata {
   std::vector<std::string> pathnames;
 };
 
-}  // namespace
+}  // namespace rocksdb
