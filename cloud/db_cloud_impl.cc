@@ -401,6 +401,15 @@ Status DBCloudImpl::NeedsReinitialization(CloudEnv* cenv,
     return st.IsNotFound() ? Status::OK() : st;
   }
 
+  // Check if CLOUDMANIFEST is missing
+  if (env->FileExists(CloudManifestFile(local_dir)).IsNotFound()) {
+    // Probably in local_dir there is an old database
+    // In this case we have to protect the old database,
+    // which requires proper database migration.
+    *do_reinit = false;
+    return Status::NotSupported();
+  }
+
   if (cenv->GetCloudEnvOptions().skip_dbid_verification) {
     *do_reinit = false;
     return Status::OK();

@@ -1526,7 +1526,7 @@ Status AwsEnv::GetPathForDbid(const std::string& bucket_prefix,
 Status AwsEnv::GetDbidList(const std::string& bucket_prefix, DbidList* dblist) {
   Aws::String bucket = GetAwsBucket(bucket_prefix);
 
-  // fetch the list all all dbids
+  // fetch the list of all dbids
   std::vector<std::string> dbid_list;
   Status st = GetChildrenFromS3(dbid_registry_, bucket_prefix, &dbid_list);
   if (!st.ok()) {
@@ -1582,7 +1582,7 @@ Status AwsEnv::DeleteObject(const std::string& bucket_name_prefix,
   return DeletePathInS3(bucket_name_prefix, bucket_object_path);
 }
 
-// Delete the specified object from the specified cloud bucket
+// Check if the specified object exists in the specified cloud bucket
 Status AwsEnv::ExistsObject(const std::string& bucket_name_prefix,
                             const std::string& bucket_object_path) {
   return HeadObject(bucket_name_prefix, bucket_object_path);
