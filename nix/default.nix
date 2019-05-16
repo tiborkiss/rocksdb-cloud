@@ -1,6 +1,6 @@
 # Custom default for rocksdb-cloud.
 { stdenv, fetchFromGitHub, fixDarwinDylibNames, which, perl, snappy ? null
-, zlib ? null, bzip2 ? null, lz4 ? null, numactl ? null, aws-sdk-cpp
+, zlib ? null, bzip2 ? null, lz4 ? null, zstd ? null, numactl ? null, aws-sdk-cpp
 , jemalloc ? null, gperftools ? null, enableLite ? false
 }:
 let
@@ -11,7 +11,7 @@ in
     version = "5.18.3";
     src = ../.;
     nativeBuildInputs = [ which perl ];
-    buildInputs = [ aws-sdk-cpp snappy zlib bzip2 lz4 malloc fixDarwinDylibNames ];
+    buildInputs = [ aws-sdk-cpp snappy zlib bzip2 lz4 zstd malloc fixDarwinDylibNames ];
     postPatch = ''
       # Hack to fix typos
       sed -i 's,#inlcude,#include,g' build_tools/build_detect_platform
@@ -28,6 +28,7 @@ in
       "USE_RTTI=1"
       "DEBUG_LEVEL=0"
       "DISABLE_WARNING_AS_ERROR=1"
+      "WITH_JEMALLOC=1"
     ];
     buildFlags = buildAndInstallFlags ++ [
       "shared_lib"

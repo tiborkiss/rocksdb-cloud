@@ -562,7 +562,7 @@ int SSTDumpTool::Run(int argc, char** argv) {
   for (size_t i = 0; i < filenames.size(); i++) {
     std::string filename = filenames.at(i);
     if (filename.length() <= 4 ||
-        filename.rfind(".sst") != filename.length() - 4) {
+        filename.rfind(".sst") == std::string::npos) {
       // ignore
       continue;
     }
