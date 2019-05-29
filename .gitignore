@@ -75,3 +75,8 @@ fbcode/
 fbcode
 travis-build/
 buckifier/*.pyc
+
+build_version\.cc
+tools/Makefile
+third-party/gtest-1.7.0/fused-src/gtest/Makefile
+
